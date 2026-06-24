@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Select Employee</title>
+    <title>Attendance Employee</title>
 
     <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js">
     </script>
@@ -146,7 +146,7 @@
 <body>
 
     <div class="card">
-        <h1>👤 Select Employee</h1>
+        <h1>👤Employee</h1>
         <div class="sub" id="companyDisplay">Company: Loading...</div>
 
         <div style="margin: 8px 0;">
@@ -176,6 +176,55 @@
           margin-top:8px;
           display:none;
         "></div>
+
+        <!-- Break / Resume controls — shown after attendance confirmed -->
+        <div id="breakControls" style="display:none; margin-top:16px;">
+          <div style="border-top:1px solid #334155; padding-top:14px;">
+            <div style="font-size:13px; color:#94a3b8; margin-bottom:8px;">
+              Work timer: <span id="empTimerDisplay" style="
+                font-family: monospace;
+                font-size:15px;
+                font-weight:700;
+                color:#38bdf8;
+                background:#0f172a;
+                padding:2px 8px;
+                border-radius:6px;
+              ">00:00:00</span>
+            </div>
+            <button id="breakBtn" onclick="handleBreak()" style="
+              width:100%;
+              padding:12px;
+              background:#f59e0b;
+              color:#1a1a1a;
+              border:none;
+              border-radius:8px;
+              font-size:15px;
+              font-weight:600;
+              cursor:pointer;
+              display:flex;
+              align-items:center;
+              justify-content:center;
+              gap:8px;
+              transition: background 0.15s;
+            ">
+              <svg id="breakBtnIcon" xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M18 8h1a4 4 0 0 1 0 8h-1"/>
+                <path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z"/>
+                <line x1="6" y1="1" x2="6" y2="4"/>
+                <line x1="10" y1="1" x2="10" y2="4"/>
+                <line x1="14" y1="1" x2="14" y2="4"/>
+              </svg>
+              <span id="breakBtnLabel">Go on Break</span>
+            </button>
+            <div id="breakStatus" style="
+              font-size:12px;
+              color:#94a3b8;
+              text-align:center;
+              margin-top:6px;
+              display:none;
+            "></div>
+          </div>
+        </div>
         
     </div>
 
@@ -232,58 +281,193 @@
         const value = selectEl.value;
 
         if (!value) {
-        errorDisplay.textContent = '⚠️ Please select an employee';
-        return;
-      }
+          errorDisplay.textContent = '⚠️ Please select an employee';
+          return;
+        }
 
-       errorDisplay.textContent = '';
+        errorDisplay.textContent = '';
+        successDisplay.style.display = 'none';
 
-       successDisplay.style.display = 'none';
-
-      const emp = JSON.parse(value);
-
-      try {
-        // Create/update attendance document
-
+        const emp = JSON.parse(value);
         const now = new Date();
+        const todayISO = now.toISOString().split('T')[0];
 
-        await db.collection('attendance').doc(emp.name).set({
+        try {
+          // ── Check if already marked present today ──
+          const existingDoc = await db.collection('attendance').doc(emp.name).get();
+
+          if (existingDoc.exists) {
+            const data = existingDoc.data();
+            if (data.dateISO === todayISO && data.status === 'Present') {
+              // Already punched in today — show warning, do NOT overwrite
+              const punchTime = data.time || '—';
+              successDisplay.innerHTML =
+                '⚠️ <strong>' + emp.name + '</strong> is already marked <span style="color:#22c55e">Present</span> today.<br>' +
+                '<span style="color:#94a3b8;font-size:13px;">First punch-in at <strong style="color:#38bdf8">' + punchTime + '</strong></span>';
+              successDisplay.style.display = 'block';
+
+              // Still show break controls so they can take a break
+              selectedName.textContent = emp.name + (emp.dept ? ' (' + emp.dept + ')' : '');
+              selectedDisplay.style.display = 'block';
+              showBtn.textContent = '✅ ' + emp.name + ' selected';
+
+              // Restore timer from existing check-in time
+              // Build a Date from the stored time string (same day)
+              let checkinDate = now; // fallback
+              if (data.time) {
+                const parts = data.time.split(':');
+                if (parts.length >= 2) {
+                  checkinDate = new Date();
+                  // time in en-IN is HH:MM:SS AM/PM or 24h — parse via Date
+                  const parsed = new Date(todayISO + 'T00:00:00');
+                  // Use the timestamp from firestore if available
+                  if (data.timestamp && data.timestamp.toDate) {
+                    checkinDate = data.timestamp.toDate();
+                  }
+                }
+              }
+
+              startEmpTimer(checkinDate, emp.name);
+              document.getElementById('breakControls').style.display = 'block';
+              return;
+            }
+          }
+
+          // ── New punch-in: write attendance ──
+          await db.collection('attendance').doc(emp.name).set({
             name: emp.name,
             dept: emp.dept || '',
             company: company,
             date: now.toLocaleDateString('en-IN'),
-            dateISO: now.toISOString().split('T')[0],
+            dateISO: todayISO,
             time: now.toLocaleTimeString('en-IN'),
-
             status: 'Present',
             timestamp: firebase.firestore.FieldValue.serverTimestamp(),
-
             selectedAt: firebase.firestore.FieldValue.serverTimestamp()
-        }, { merge: true });
-        successDisplay.textContent = '✅ Attendance done successfully';
-        successDisplay.style.display = 'block';
+          }, { merge: true });
 
-        selectedName.textContent =
-            emp.name + (emp.dept ? ' (' + emp.dept + ')' : '');
+          successDisplay.textContent = '✅ Attendance marked successfully';
+          successDisplay.style.display = 'block';
 
-        selectedDisplay.style.display = 'block';
-        showBtn.textContent = '✅ ' + emp.name + ' selected';
+          selectedName.textContent = emp.name + (emp.dept ? ' (' + emp.dept + ')' : '');
+          selectedDisplay.style.display = 'block';
+          showBtn.textContent = '✅ ' + emp.name + ' selected';
 
-        console.log('Attendance updated');
+          // Start employee-side timer
+          startEmpTimer(now, emp.name);
 
-      } catch (err) {
-        errorDisplay.textContent = '❌ ' + err.message;
-        console.error(err);
-       }
+          // Show break controls
+          document.getElementById('breakControls').style.display = 'block';
+
+          console.log('Attendance updated');
+
+        } catch (err) {
+          errorDisplay.textContent = '❌ ' + err.message;
+          console.error(err);
+        }
       }
 
+
+        // ════════════════════════════════════════════
+        // ⏱ EMPLOYEE-SIDE TIMER & BREAK
+        // ════════════════════════════════════════════
+        let _empCheckin = null;
+        let _empName = null;
+        let _empBreakState = { onBreak: false, breakStart: null, totalBreakMs: 0 };
+        let _empTimerInterval = null;
+
+        function startEmpTimer(checkinDate, name) {
+            _empCheckin = checkinDate;
+            _empName = name;
+            if (_empTimerInterval) clearInterval(_empTimerInterval);
+            _empTimerInterval = setInterval(tickEmpTimer, 1000);
+            tickEmpTimer();
+        }
+
+        function tickEmpTimer() {
+            if (!_empCheckin) return;
+            const now = new Date();
+            let elapsedMs = now - _empCheckin;
+            let breakMs = _empBreakState.totalBreakMs || 0;
+            if (_empBreakState.onBreak && _empBreakState.breakStart) {
+                breakMs += now - _empBreakState.breakStart;
+            }
+            elapsedMs = Math.max(0, elapsedMs - breakMs);
+            document.getElementById('empTimerDisplay').textContent = msToHMS(elapsedMs);
+        }
+
+        function msToHMS(ms) {
+            const s = Math.floor(ms / 1000);
+            const h = Math.floor(s / 3600);
+            const m = Math.floor((s % 3600) / 60);
+            const sec = s % 60;
+            return [h, m, sec].map(v => String(v).padStart(2, '0')).join(':');
+        }
+
+        // SVG icons for break button
+        const ICON_COFFEE = `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M18 8h1a4 4 0 0 1 0 8h-1"/>
+          <path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z"/>
+          <line x1="6" y1="1" x2="6" y2="4"/>
+          <line x1="10" y1="1" x2="10" y2="4"/>
+          <line x1="14" y1="1" x2="14" y2="4"/>
+        </svg>`;
+
+        const ICON_PLAY = `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="currentColor" stroke="none">
+          <polygon points="5,3 19,12 5,21"/>
+        </svg>`;
+
+        async function handleBreak() {
+            const btn = document.getElementById('breakBtn');
+            const icon = document.getElementById('breakBtnIcon');
+            const label = document.getElementById('breakBtnLabel');
+            const statusEl = document.getElementById('breakStatus');
+            const now = new Date();
+
+            if (!_empBreakState.onBreak) {
+                // Start break
+                _empBreakState.onBreak = true;
+                _empBreakState.breakStart = now;
+                // Switch to play icon + green
+                btn.innerHTML = ICON_PLAY + '<span>Resume Work</span>';
+                btn.style.background = '#22c55e';
+                btn.style.color = '#fff';
+                statusEl.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#f59e0b" stroke-width="2" style="vertical-align:middle;margin-right:4px"><path d="M18 8h1a4 4 0 0 1 0 8h-1"/><path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z"/><line x1="6" y1="1" x2="6" y2="4"/><line x1="10" y1="1" x2="10" y2="4"/><line x1="14" y1="1" x2="14" y2="4"/></svg>On break since <strong>${now.toLocaleTimeString('en-IN')}</strong>`;
+                statusEl.style.display = 'block';
+                try {
+                    await db.collection('attendance').doc(_empName).set({
+                        onBreak: true,
+                        breakStart: firebase.firestore.FieldValue.serverTimestamp(),
+                        totalBreakMs: _empBreakState.totalBreakMs
+                    }, { merge: true });
+                } catch(e) { console.error(e); }
+            } else {
+                // End break
+                const dur = _empBreakState.breakStart ? (now - _empBreakState.breakStart) : 0;
+                _empBreakState.totalBreakMs = (_empBreakState.totalBreakMs || 0) + dur;
+                _empBreakState.onBreak = false;
+                _empBreakState.breakStart = null;
+                // Restore coffee icon + amber
+                btn.innerHTML = ICON_COFFEE + '<span>Go on Break</span>';
+                btn.style.background = '#f59e0b';
+                btn.style.color = '#1a1a1a';
+                statusEl.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#22c55e" stroke-width="2.5" style="vertical-align:middle;margin-right:4px"><polyline points="20 6 9 17 4 12"/></svg>Back to work at <strong>${now.toLocaleTimeString('en-IN')}</strong>`;
+                statusEl.style.display = 'block';
+                try {
+                    await db.collection('attendance').doc(_empName).set({
+                        onBreak: false,
+                        breakStart: null,
+                        totalBreakMs: _empBreakState.totalBreakMs
+                    }, { merge: true });
+                } catch(e) { console.error(e); }
+            }
+        }
 
         // ── Load employees into dropdown ──
         async function loadEmployees() {
             try {
-                const snapshot = await db.collection('employees')
-                    .where('company', '==', company)
-                    .get();
+                const snapshot = await db.collection('employees').get();
+                    
 
                 let employees = [];
                 snapshot.forEach(doc => {
