@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Select Employee</title>
+
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js">
+    </script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-firestore-compat.js">
+    </script>
+
+    <style>
+        body {
+            font-family: system-ui, sans-serif;
+            background: #0f172a;
+            color: #f8fafc;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            margin: 0;
+            padding: 20px;
+        }
+        .card {
+            background: #1e293b;
+            border-radius: 12px;
+            padding: 30px;
+            max-width: 400px;
+            width: 100%;
+        }
+        h1 {
+            font-size: 20px;
+            margin-bottom: 5px;
+        }
+        .sub {
+            color: #94a3b8;
+            font-size: 14px;
+            margin-bottom: 20px;
+        }
+        label {
+            display: block;
+            font-size: 13px;
+            font-weight: 600;
+            color: #94a3b8;
+            margin-bottom: 6px;
+        }
+        select {
+            width: 100%;
+            padding: 12px 14px;
+            border: 1px solid #334155;
+            border-radius: 8px;
+            background: #0f172a;
+            color: #f8fafc;
+            font-size: 16px;
+            font-family: inherit;
+            appearance: none;
+            -webkit-appearance: none;
+            cursor: pointer;
+            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%2394A3B8' stroke-width='2'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+            background-repeat: no-repeat;
+            background-position: right 12px center;
+            padding-right: 36px;
+        }
+        select:focus {
+            outline: none;
+            border-color: #3b82f6;
+            box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.2);
+        }
+        select option {
+            padding: 8px;
+        }
+        .badge {
+            display: inline-block;
+            padding: 2px 12px;
+            border-radius: 20px;
+            font-size: 11px;
+            font-weight: 600;
+            margin-top: 10px;
+        }
+        .badge-online {
+            background: #064e3b;
+            color: #6ee7b7;
+        }
+        .badge-offline {
+            background: #7f1d1d;
+            color: #fca5a5;
+        }
+        .loading {
+            text-align: center;
+            padding: 10px 0;
+            color: #94a3b8;
+            font-size: 14px;
+        }
+        .spinner {
+            display: inline-block;
+            width: 16px;
+            height: 16px;
+            border: 2px solid #334155;
+            border-top-color: #3b82f6;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+            vertical-align: middle;
+            margin-right: 8px;
+        }
+        @keyframes spin {
+            to {
+                transform: rotate(360deg);
+            }
+        }
+        .error {
+            color: #ef4444;
+            font-size: 13px;
+            margin-top: 8px;
+        }
+        .selected {
+            margin-top: 12px;
+            padding: 10px;
+            background: #0f172a;
+            border-radius: 6px;
+            font-size: 14px;
+            color: #94a3b8;
+            display: none;
+        }
+        .selected .name {
+            color: #f8fafc;
+            font-weight: 600;
+        }
+        .btn {
+            width: 100%;
+            padding: 10px;
+            background: #3b82f6;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 14px;
+            cursor: pointer;
+            margin-top: 8px;
+            display: none;
+        }
+        .btn:hover {
+            background: #2563eb;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="card">
+        <h1>👤 Select Employee</h1>
+        <div class="sub" id="companyDisplay">Company: Loading...</div>
+
+        <div style="margin: 8px 0;">
+            <span class="badge badge-online" id="statusBadge">● Online</span>
+        </div>
+
+        <label for="employeeSelect">Choose your name:</label>
+
+        <div id="loadingDiv" class="loading">
+            <span class="spinner"></span> Loading employees...
+        </div>
+
+        <select id="employeeSelect" style="display:none;">
+            <option value="">— Select —</option>
+        </select>
+
+        <button class="btn" id="showBtn" onclick="showSelected()">✅ Confirm Attendance</button>
+
+        <div class="selected" id="selectedDisplay">
+            Present: <span class="name" id="selectedName"></span>
+        </div>
+
+        <div class="error" id="errorDisplay"></div>
+        <div id="successDisplay" style="
+          color:#22c55e;
+          font-size:14px;
+          margin-top:8px;
+          display:none;
+        "></div>
+        
+    </div>
+
+    <script>
+        // ════════════════════════════════════════════
+        // 🔥 FIREBASE CONFIG
+        // ════════════════════════════════════════════
+        const firebaseConfig = {
+            apiKey: "AIzaSyAtw1h7A3DkcJwv5BEiif2RiwBCDCIuHxQ",
+            authDomain: "attendance-16ed5.firebaseapp.com",
+            projectId: "attendance-16ed5",
+            storageBucket: "attendance-16ed5.firebasestorage.app",
+            messagingSenderId: "252998999489",
+            appId: "1:252998999489:web:a64af8feb6b6786a602340",
+            measurementId: "G-9VPCEE4H91"
+        };
+
+        // Initialize Firebase
+        firebase.initializeApp(firebaseConfig);
+        const db = firebase.firestore();
+
+        // ── Get company from URL ──
+        const params = new URLSearchParams(window.location.search);
+        const company = params.get('company') || 'CityWare';
+
+        document.getElementById('companyDisplay').textContent = 'Company: ' + company;
+
+        // ── DOM Elements ──
+        const selectEl = document.getElementById('employeeSelect');
+        const loadingDiv = document.getElementById('loadingDiv');
+        const errorDisplay = document.getElementById('errorDisplay');
+        const showBtn = document.getElementById('showBtn');
+        const selectedDisplay = document.getElementById('selectedDisplay');
+        const selectedName = document.getElementById('selectedName');
+        const successDisplay = document.getElementById('successDisplay');
+
+        // ── Online Status ──
+        function updateStatus() {
+            const badge = document.getElementById('statusBadge');
+            if (navigator.onLine) {
+                badge.textContent = '● Online';
+                badge.className = 'badge badge-online';
+            } else {
+                badge.textContent = '● Offline';
+                badge.className = 'badge badge-offline';
+            }
+        }
+        updateStatus();
+        window.addEventListener('online', updateStatus);
+        window.addEventListener('offline', updateStatus);
+
+        // ── Show selected employee ──
+      async function showSelected() {
+        const value = selectEl.value;
+
+        if (!value) {
+        errorDisplay.textContent = '⚠️ Please select an employee';
+        return;
+      }
+
+       errorDisplay.textContent = '';
+
+       successDisplay.style.display = 'none';
+
+      const emp = JSON.parse(value);
+
+      try {
+        // Create/update attendance document
+
+        const now = new Date();
+
+        await db.collection('attendance').doc(emp.name).set({
+            name: emp.name,
+            dept: emp.dept || '',
+            company: company,
+            date: now.toLocaleDateString('en-IN'),
+            dateISO: now.toISOString().split('T')[0],
+            time: now.toLocaleTimeString('en-IN'),
+
+            status: 'Present',
+            timestamp: firebase.firestore.FieldValue.serverTimestamp(),
+
+            selectedAt: firebase.firestore.FieldValue.serverTimestamp()
+        }, { merge: true });
+        successDisplay.textContent = '✅ Attendance done successfully';
+        successDisplay.style.display = 'block';
+
+        selectedName.textContent =
+            emp.name + (emp.dept ? ' (' + emp.dept + ')' : '');
+
+        selectedDisplay.style.display = 'block';
+        showBtn.textContent = '✅ ' + emp.name + ' selected';
+
+        console.log('Attendance updated');
+
+      } catch (err) {
+        errorDisplay.textContent = '❌ ' + err.message;
+        console.error(err);
+       }
+      }
+
+
+        // ── Load employees into dropdown ──
+        async function loadEmployees() {
+            try {
+                const snapshot = await db.collection('employees')
+                    .where('company', '==', company)
+                    .get();
+
+                let employees = [];
+                snapshot.forEach(doc => {
+                    employees.push(doc.data());
+                });
+
+                loadingDiv.style.display = 'none';
+
+                if (employees.length === 0) {
+                    errorDisplay.textContent = '⚠️ No employees found for "' + company + '"';
+                    return;
+                }
+
+                // Populate dropdown
+                selectEl.style.display = 'block';
+                showBtn.style.display = 'block';
+
+                employees.forEach(emp => {
+                    const opt = document.createElement('option');
+                    opt.value = JSON.stringify(emp);
+                    opt.textContent = emp.name + (emp.dept ? ' (' + emp.dept + ')' : '');
+                    selectEl.appendChild(opt);
+                });
+
+                // Auto-select first employee
+                selectEl.value = selectEl.options[1]?.value || '';
+
+                console.log('✅ Loaded ' + employees.length + ' employees');
+
+            } catch (err) {
+                loadingDiv.style.display = 'none';
+                errorDisplay.textContent = '❌ Error: ' + err.message;
+                console.error(err);
+            }
+        }
+
+        // ── Run ──
+        loadEmployees();
+    </script>
+
+</body>
+</html>
