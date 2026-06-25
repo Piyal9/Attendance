@@ -334,36 +334,58 @@
           if (existingDoc.exists) {
             const data = existingDoc.data();
             if (data.dateISO === todayISO && data.status === 'Present') {
-              // Already punched in today — show warning, do NOT overwrite
+
+              // ── Already logged OUT today — show final time, disable everything ──
+              if (data.logoutTime && data.totalTime) {
+                successDisplay.innerHTML =
+                  '✅ <strong>' + emp.name + '</strong> shift ended today.<br>' +
+                  '<span style="color:#94a3b8;font-size:13px;">Total worked: <strong style="color:#38bdf8">' + data.totalTime + '</strong></span>';
+                successDisplay.style.display = 'block';
+
+                selectedName.textContent = emp.name + (emp.dept ? ' (' + emp.dept + ')' : '');
+                selectedDisplay.style.display = 'block';
+                showBtn.textContent = '✅ ' + emp.name + ' selected';
+
+                // Show frozen final timer, disable buttons
+                document.getElementById('breakControls').style.display = 'block';
+                document.getElementById('empTimerDisplay').textContent = data.totalTime;
+                document.getElementById('empTimerDisplay').style.color = '#22c55e';
+                document.getElementById('breakBtn').disabled = true;
+                document.getElementById('breakBtn').style.opacity = '0.4';
+                document.getElementById('logoutBtn').disabled = true;
+                document.getElementById('logoutBtn').style.background = '#334155';
+                document.getElementById('logoutBtn').innerHTML = '✅ Shift Ended';
+                document.getElementById('logoutStatus').innerHTML =
+                  `✅ Logged out at <strong>${data.logoutTime}</strong><br>` +
+                  `Total time worked: <strong style="color:#38bdf8">${data.totalTime}</strong>`;
+                document.getElementById('logoutStatus').style.display = 'block';
+                return;
+              }
+
+              // ── Still active (or on break) today — restore session ──
               const punchTime = data.time || '—';
               successDisplay.innerHTML =
                 '⚠️ <strong>' + emp.name + '</strong> is already marked <span style="color:#22c55e">Present</span> today.<br>' +
                 '<span style="color:#94a3b8;font-size:13px;">First punch-in at <strong style="color:#38bdf8">' + punchTime + '</strong></span>';
               successDisplay.style.display = 'block';
 
-              // Still show break controls so they can take a break
               selectedName.textContent = emp.name + (emp.dept ? ' (' + emp.dept + ')' : '');
               selectedDisplay.style.display = 'block';
               showBtn.textContent = '✅ ' + emp.name + ' selected';
 
-              // Restore timer from existing check-in time
-              // Build a Date from the stored time string (same day)
-              let checkinDate = now; // fallback
-              if (data.time) {
-                const parts = data.time.split(':');
-                if (parts.length >= 2) {
-                  checkinDate = new Date();
-                  // time in en-IN is HH:MM:SS AM/PM or 24h — parse via Date
-                  const parsed = new Date(todayISO + 'T00:00:00');
-                  // Use the timestamp from firestore if available
-                  if (data.timestamp && data.timestamp.toDate) {
-                    checkinDate = data.timestamp.toDate();
-                  }
-                }
+              // Resolve check-in time: use Firestore Timestamp if available, else parse time string
+              let checkinDate = now;
+              if (data.timestamp && data.timestamp.toDate) {
+                checkinDate = data.timestamp.toDate();
+              } else if (data.time) {
+                const parsed = new Date(todayISO + 'T00:00:00');
+                const t = new Date(new Date().toDateString() + ' ' + data.time);
+                if (!isNaN(t)) checkinDate = t;
               }
 
-              startEmpTimer(checkinDate, emp.name);
+              // startEmpTimer reads Firebase break state itself and freezes/runs accordingly
               document.getElementById('breakControls').style.display = 'block';
+              await startEmpTimer(checkinDate, emp.name);
               return;
             }
           }
@@ -378,7 +400,11 @@
             time: now.toLocaleTimeString('en-IN'),
             status: 'Present',
             timestamp: firebase.firestore.FieldValue.serverTimestamp(),
-            selectedAt: firebase.firestore.FieldValue.serverTimestamp()
+            selectedAt: firebase.firestore.FieldValue.serverTimestamp(),
+            onBreak: false,
+            breakStart: null,
+            breakStartISO: null,
+            totalBreakMs: 0
           }, { merge: true });
 
           successDisplay.textContent = '✅ Attendance marked successfully';
@@ -388,11 +414,9 @@
           selectedDisplay.style.display = 'block';
           showBtn.textContent = '✅ ' + emp.name + ' selected';
 
-          // Start employee-side timer
-          startEmpTimer(now, emp.name);
-
-          // Show break controls
+          // Show break controls and start fresh timer
           document.getElementById('breakControls').style.display = 'block';
+          await startEmpTimer(now, emp.name);
 
           console.log('Attendance updated');
 
@@ -411,23 +435,58 @@
         let _empBreakState = { onBreak: false, breakStart: null, totalBreakMs: 0 };
         let _empTimerInterval = null;
 
-        function startEmpTimer(checkinDate, name) {
+        // ── Start timer AFTER reading break state from Firebase ──
+        async function startEmpTimer(checkinDate, name) {
             _empCheckin = checkinDate;
             _empName = name;
             if (_empTimerInterval) clearInterval(_empTimerInterval);
+
+            // Always read the latest break state from Firebase before starting the clock.
+            // This is the key fix: on page reload the break state is fully restored.
+            try {
+                const doc = await db.collection('attendance').doc(name).get();
+                if (doc.exists) {
+                    const d = doc.data();
+                    _empBreakState.totalBreakMs = d.totalBreakMs || 0;
+                    _empBreakState.onBreak      = d.onBreak || false;
+
+                    if (_empBreakState.onBreak && (d.breakStartISO || d.breakStart)) {
+                        // Prefer the plain ISO string we save — it survives any Timestamp quirk
+                        _empBreakState.breakStart = d.breakStartISO
+                            ? new Date(d.breakStartISO)
+                            : (d.breakStart && d.breakStart.toDate ? d.breakStart.toDate() : new Date(d.breakStart));
+                    } else {
+                        _empBreakState.breakStart = null;
+                    }
+
+                    // Restore the correct button state
+                    applyBreakBtnState(_empBreakState.onBreak);
+                }
+            } catch(e) { console.error('Error syncing break state:', e); }
+
+            // Start ticking (tickEmpTimer is freeze-aware)
             _empTimerInterval = setInterval(tickEmpTimer, 1000);
-            tickEmpTimer();
+            tickEmpTimer(); // immediate first paint
         }
 
+        // ── Tick: FREEZE display while on break, count up otherwise ──
         function tickEmpTimer() {
             if (!_empCheckin) return;
             const now = new Date();
-            let elapsedMs = now - _empCheckin;
-            let breakMs = _empBreakState.totalBreakMs || 0;
+            let elapsedMs;
+
             if (_empBreakState.onBreak && _empBreakState.breakStart) {
-                breakMs += now - _empBreakState.breakStart;
+                // FROZEN: show time up to the moment break started, minus prior breaks
+                elapsedMs = Math.max(0,
+                    (_empBreakState.breakStart - _empCheckin) - (_empBreakState.totalBreakMs || 0)
+                );
+            } else {
+                // RUNNING: now minus checkin minus all accumulated break time
+                elapsedMs = Math.max(0,
+                    (now - _empCheckin) - (_empBreakState.totalBreakMs || 0)
+                );
             }
-            elapsedMs = Math.max(0, elapsedMs - breakMs);
+
             document.getElementById('empTimerDisplay').textContent = msToHMS(elapsedMs);
         }
 
@@ -452,49 +511,82 @@
           <polygon points="5,3 19,12 5,21"/>
         </svg>`;
 
-        async function handleBreak() {
-            const btn = document.getElementById('breakBtn');
-            const icon = document.getElementById('breakBtnIcon');
-            const label = document.getElementById('breakBtnLabel');
+        // ── Apply button appearance based on current break state ──
+        function applyBreakBtnState(onBreak) {
+            const btn      = document.getElementById('breakBtn');
             const statusEl = document.getElementById('breakStatus');
-            const now = new Date();
+            if (!btn) return;
+            if (onBreak) {
+                btn.innerHTML        = ICON_PLAY + '<span>Resume Work</span>';
+                btn.style.background = '#22c55e';
+                btn.style.color      = '#fff';
+                // Show "still on break" status if restoring after reload
+                if (statusEl && statusEl.style.display === 'none') {
+                    const breakSince = _empBreakState.breakStart
+                        ? _empBreakState.breakStart.toLocaleTimeString('en-IN')
+                        : '—';
+                    statusEl.innerHTML =
+                        `<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#f59e0b" stroke-width="2" style="vertical-align:middle;margin-right:4px"><path d="M18 8h1a4 4 0 0 1 0 8h-1"/><path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z"/><line x1="6" y1="1" x2="6" y2="4"/><line x1="10" y1="1" x2="10" y2="4"/><line x1="14" y1="1" x2="14" y2="4"/></svg>On break since <strong>${breakSince}</strong>`;
+                    statusEl.style.display = 'block';
+                }
+            } else {
+                btn.innerHTML        = ICON_COFFEE + '<span>Go on Break</span>';
+                btn.style.background = '#f59e0b';
+                btn.style.color      = '#1a1a1a';
+            }
+        }
+
+        async function handleBreak() {
+            const btn      = document.getElementById('breakBtn');
+            const statusEl = document.getElementById('breakStatus');
+            const now      = new Date();
 
             if (!_empBreakState.onBreak) {
-                // Start break
-                _empBreakState.onBreak = true;
-                _empBreakState.breakStart = now;
-                // Switch to play icon + green
-                btn.innerHTML = ICON_PLAY + '<span>Resume Work</span>';
-                btn.style.background = '#22c55e';
-                btn.style.color = '#fff';
-                statusEl.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#f59e0b" stroke-width="2" style="vertical-align:middle;margin-right:4px"><path d="M18 8h1a4 4 0 0 1 0 8h-1"/><path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z"/><line x1="6" y1="1" x2="6" y2="4"/><line x1="10" y1="1" x2="10" y2="4"/><line x1="14" y1="1" x2="14" y2="4"/></svg>On break since <strong>${now.toLocaleTimeString('en-IN')}</strong>`;
+                // ── START BREAK ──
+                _empBreakState.onBreak    = true;
+                _empBreakState.breakStart = now; // exact local time — used to freeze display
+
+                applyBreakBtnState(true);
+                statusEl.innerHTML =
+                    `<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#f59e0b" stroke-width="2" style="vertical-align:middle;margin-right:4px"><path d="M18 8h1a4 4 0 0 1 0 8h-1"/><path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z"/><line x1="6" y1="1" x2="6" y2="4"/><line x1="10" y1="1" x2="10" y2="4"/><line x1="14" y1="1" x2="14" y2="4"/></svg>On break since <strong>${now.toLocaleTimeString('en-IN')}</strong>`;
                 statusEl.style.display = 'block';
+
+                // Save to Firebase:
+                //  - onBreak: true  → tells any reload to freeze the timer
+                //  - breakStartISO  → plain ISO string, survives Timestamp quirks on reload
+                //  - totalBreakMs   → prior accumulated break time (unchanged yet)
                 try {
                     await db.collection('attendance').doc(_empName).set({
-                        onBreak: true,
-                        breakStart: firebase.firestore.FieldValue.serverTimestamp(),
+                        onBreak:      true,
+                        breakStart:   firebase.firestore.FieldValue.serverTimestamp(),
+                        breakStartISO: now.toISOString(),
                         totalBreakMs: _empBreakState.totalBreakMs
                     }, { merge: true });
-                } catch(e) { console.error(e); }
+                } catch(e) { console.error('Break start save error:', e); }
+
             } else {
-                // End break
+                // ── END BREAK ──
                 const dur = _empBreakState.breakStart ? (now - _empBreakState.breakStart) : 0;
                 _empBreakState.totalBreakMs = (_empBreakState.totalBreakMs || 0) + dur;
-                _empBreakState.onBreak = false;
-                _empBreakState.breakStart = null;
-                // Restore coffee icon + amber
-                btn.innerHTML = ICON_COFFEE + '<span>Go on Break</span>';
-                btn.style.background = '#f59e0b';
-                btn.style.color = '#1a1a1a';
-                statusEl.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#22c55e" stroke-width="2.5" style="vertical-align:middle;margin-right:4px"><polyline points="20 6 9 17 4 12"/></svg>Back to work at <strong>${now.toLocaleTimeString('en-IN')}</strong>`;
+                _empBreakState.onBreak      = false;
+                _empBreakState.breakStart   = null;
+
+                applyBreakBtnState(false);
+                statusEl.innerHTML =
+                    `<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#22c55e" stroke-width="2.5" style="vertical-align:middle;margin-right:4px"><polyline points="20 6 9 17 4 12"/></svg>Back to work at <strong>${now.toLocaleTimeString('en-IN')}</strong>`;
                 statusEl.style.display = 'block';
+
+                // Save to Firebase:
+                //  - onBreak: false + breakStart: null → tells reload to resume counting
+                //  - totalBreakMs updated with this break's duration
                 try {
                     await db.collection('attendance').doc(_empName).set({
-                        onBreak: false,
-                        breakStart: null,
-                        totalBreakMs: _empBreakState.totalBreakMs
+                        onBreak:       false,
+                        breakStart:    null,
+                        breakStartISO: null,
+                        totalBreakMs:  _empBreakState.totalBreakMs
                     }, { merge: true });
-                } catch(e) { console.error(e); }
+                } catch(e) { console.error('Break end save error:', e); }
             }
         }
 
