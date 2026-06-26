@@ -703,6 +703,10 @@
             }
         }
 
+        // ── Expose handlers so onclick="" attributes can reach them ──
+        window.handleBreak  = handleBreak;
+        window.handleLogout = handleLogout;
+
         // ── Run ──
         loadEmployees();
     </script>
